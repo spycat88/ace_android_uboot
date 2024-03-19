@@ -11,6 +11,7 @@
 #include <power/rk8xx_pmic.h>
 #include <power/pmic.h>
 #include <spi.h>
+#include <boot_rkimg.h>
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -139,10 +140,17 @@ static int rk806_spi_read(struct udevice *dev,
 			  int len)
 {
 	int ret;
+	int vibrator_gpio = 33;//gsy add
 
 	ret = _spi_read(dev, reg, buffer, len);
 	if (ret)
 		dev_err(dev, "rk806 read reg(0x%x) error: %d\n", reg, ret);
+
+       // gsy 拉低右马达GPIO64
+       gpio_request(33,"enable");
+       gpio_direction_output(vibrator_gpio, 0); 
+       mdelay(10);
+       // gsy end
 
 	return ret;
 }
@@ -258,6 +266,28 @@ static inline int rk8xx_spi_irq_chip_init(struct udevice *dev)
 	return 0;
 }
 #endif
+static int rk8xx_spi_shutdown(struct udevice *dev)
+{
+        u8 dev_off;
+        int ret = 0;
+
+        ret = rk806_spi_read(dev, RK806_SYS_CFG3, &dev_off, 1);
+        if (ret)
+                return ret;
+
+        dev_off |= RK806_DEV_OFF;
+        ret = rk806_spi_write(dev, RK806_SYS_CFG3, &dev_off, 1);
+        if (ret) {
+                dev_err(dev, "rk806 shutdown error: %d\n", ret);
+                return ret;
+        }
+
+        while (1)
+		;
+
+        return 0;
+}
+
 
 static int rk8xx_spi_probe(struct udevice *dev)
 {
@@ -268,7 +298,8 @@ static int rk8xx_spi_probe(struct udevice *dev)
 	u8 on_source, off_source;
 	u8 msb, lsb, value = 0;
 	int ret;
-
+	int mode;
+	int i;
 	if (spi->seq < 0) {
 		dev_err(dev, "Failed to configure the spi num\n");
 		return -EINVAL;
@@ -292,6 +323,24 @@ static int rk8xx_spi_probe(struct udevice *dev)
 		dev_err(dev, "rk806 version read error: %d\n", ret);
 		return ret;
 	}
+	/* 10*100ms */
+	mode = rockchip_get_boot_mode();
+
+	if ((pmic_reg_read(dev, 0x5d) & 0x80) && (pmic_reg_read(dev, 0x74) & 0x80) &&
+	    mode == BOOT_MODE_UNDEFINE) {
+		i = 0;
+		while (i < 40) {
+			value = pmic_reg_read(dev, 0x5d);
+			if (value & 0x80) {
+				printf("xxxx: power off\n");
+				rk8xx_spi_shutdown(dev);
+			}
+			mdelay(100);
+			i++;
+		}
+		printf("xxxx: power on\n");
+	}
+
 
 	priv->variant = ((msb << 8) | lsb) & RK8XX_ID_MSK;
 	printf("spi%d: RK%x%x: %d\n", spi->seq, msb, (lsb >> 4), lsb & 0x0f);
@@ -344,7 +393,7 @@ static int rk8xx_spi_probe(struct udevice *dev)
 
 	return 0;
 }
-
+/*
 static int rk8xx_spi_shutdown(struct udevice *dev)
 {
 	u8 dev_off;
@@ -366,7 +415,7 @@ static int rk8xx_spi_shutdown(struct udevice *dev)
 
 	return 0;
 }
-
+*/
 static int rk806_suspend(struct udevice *dev)
 {
 	int ret = 0;
